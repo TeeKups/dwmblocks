@@ -28,6 +28,7 @@ typedef struct {
 void dummysighandler(int num);
 #endif
 void sighandler(int num);
+void buttonhandler(int sig, siginfo_t *si, void *ucontext);
 void getcmds(int time);
 void getsigcmds(unsigned int signal);
 void setupsignals();
@@ -52,14 +53,33 @@ static void (*writestatus) () = pstdout;
 
 static char statusbar[LENGTH(blocks)][CMDLENGTH] = {0};
 static char statusstr[2][STATUSLENGTH];
+static char button[] = "\0";
 static int statusContinue = 1;
 static int returnStatus = 0;
 
 //opens process *cmd and stores output in *output
-void getcmd(const Block *block, char *output)
+void
+getcmd(const Block *block, char *output)
 {
+	if (block->signal)
+	{
+		output[0] = block->signal;
+		output++;
+	}
 	strcpy(output, block->icon);
-	FILE *cmdf = popen(block->command, "r");
+	char *cmd = block->command;
+	FILE *cmdf;
+	if (*button)
+	{
+		setenv("BUTTON", button, 1);
+		cmdf = popen(cmd, "r");
+		*button = '\0';
+		unsetenv("BUTTON");
+	}
+	else
+	{
+		cmdf = popen(cmd, "r");
+	}
 	if (!cmdf)
 		return;
 	int i = strlen(block->icon);
@@ -80,7 +100,8 @@ void getcmd(const Block *block, char *output)
 	pclose(cmdf);
 }
 
-void getcmds(int time)
+void
+getcmds(int time)
 {
 	const Block* current;
 	for (unsigned int i = 0; i < LENGTH(blocks); i++) {
@@ -90,7 +111,8 @@ void getcmds(int time)
 	}
 }
 
-void getsigcmds(unsigned int signal)
+void
+getsigcmds(unsigned int signal)
 {
 	const Block *current;
 	for (unsigned int i = 0; i < LENGTH(blocks); i++) {
@@ -100,8 +122,10 @@ void getsigcmds(unsigned int signal)
 	}
 }
 
-void setupsignals()
+void
+setupsignals()
 {
+	struct sigaction sa;
 #ifndef __OpenBSD__
 	    /* initialize all real time signals with dummy handler */
     for (int i = SIGRTMIN; i <= SIGRTMAX; i++)
@@ -109,13 +133,19 @@ void setupsignals()
 #endif
 
 	for (unsigned int i = 0; i < LENGTH(blocks); i++) {
-		if (blocks[i].signal > 0)
+		if (blocks[i].signal > 0) {
 			signal(SIGMINUS+blocks[i].signal, sighandler);
+			sigaddset(&sa.sa_mask, SIGRTMIN+blocks[i].signal); // ignore signal when handling SIGUSR1
+		}
 	}
+	sa.sa_sigaction = buttonhandler;
+	sa.sa_flags = SA_SIGINFO;
+	sigaction(SIGUSR1, &sa, NULL);
 
 }
 
-int getstatus(char *str, char *last)
+int
+getstatus(char *str, char *last)
 {
 	strcpy(last, str);
 	str[0] = '\0';
@@ -126,7 +156,8 @@ int getstatus(char *str, char *last)
 }
 
 #ifndef NO_X
-void setroot()
+void
+setroot()
 {
 	if (!getstatus(statusstr[0], statusstr[1]))//Only set root if text has changed.
 		return;
@@ -134,7 +165,8 @@ void setroot()
 	XFlush(dpy);
 }
 
-int setupX()
+int
+setupX()
 {
 	dpy = XOpenDisplay(NULL);
 	if (!dpy) {
@@ -145,9 +177,18 @@ int setupX()
 	root = RootWindow(dpy, screen);
 	return 1;
 }
+
+void
+buttonhandler(int sig, siginfo_t *si, void *ucontext)
+{
+	*button = '0' + si->si_value.sival_int & 0xff;
+	getsigcmds(si->si_value.sival_int >> 8);
+	writestatus();
+}
 #endif
 
-void pstdout()
+void
+pstdout()
 {
 	if (!getstatus(statusstr[0], statusstr[1]))//Only write out if text has changed.
 		return;
@@ -156,7 +197,8 @@ void pstdout()
 }
 
 
-void statusloop()
+void
+statusloop()
 {
 	setupsignals();
 	int i = 0;
@@ -172,24 +214,28 @@ void statusloop()
 
 #ifndef __OpenBSD__
 /* this signal handler should do nothing */
-void dummysighandler(int signum)
+void
+dummysighandler(int signum)
 {
     return;
 }
 #endif
 
-void sighandler(int signum)
+void
+sighandler(int signum)
 {
 	getsigcmds(signum-SIGPLUS);
 	writestatus();
 }
 
-void termhandler()
+void
+termhandler()
 {
 	statusContinue = 0;
 }
 
-int main(int argc, char** argv)
+int
+main(int argc, char** argv)
 {
 	for (int i = 0; i < argc; i++) {//Handle command line arguments
 		if (!strcmp("-d",argv[i]))
